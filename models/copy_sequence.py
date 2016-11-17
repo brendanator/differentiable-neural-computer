@@ -34,24 +34,29 @@ batch_size = 1
 sequence_length = 5
 sequence_padding = 1
 sequence_width = 5
-num_sequences = 1
-lr = 0.001
+num_sequences = 10
 total_sequence_length = (sequence_length + sequence_padding) * 2 * num_sequences
 
 input_shape = [batch_size, total_sequence_length, sequence_width]
 input_sequences = tf.placeholder(shape=input_shape, dtype=dtype)
 required_output = required_output(input_sequences, sequence_length, sequence_padding)
-controller_network = SimpleFeedforwardController(20, 3)
+controller_network = SimpleFeedforwardController(20, 2, tf.nn.relu)
 
 dnc = DifferentiableNeuralComputer(
   controller_network,
-  memory_locations=10,
-  memory_width=sequence_width,
+  memory_locations=2*sequence_length,
+  memory_width=2*sequence_width,
   num_read_heads=1)
 
 # dnc = tf.nn.rnn_cell.BasicLSTMCell(20)
 # dnc = tf.nn.rnn_cell.MultiRNNCell([dnc] * 3)
-outputs, _ = tf.nn.dynamic_rnn(dnc, input_sequences, dtype=dtype)
+outputs, states = tf.scan(fn=lambda a, x: dnc(x, a[1]),
+                          elems=tf.transpose(input_sequences, [1, 0, 2]),
+                          initializer=(tf.zeros([batch_size, dnc.output_size]), dnc.zero_state(batch_size, dtype)))
+outputs = tf.transpose(outputs, [1, 0, 2])
+# print(states)
+# outputs, _ = tf.nn.dynamic_rnn(dnc, input_sequences, dtype=dtype)
+# print(outputs)
 
 weights = tf.get_variable('weights', [dnc.output_size, sequence_width])
 bias = tf.get_variable('bias', [sequence_width])
@@ -61,29 +66,29 @@ output_sequences = tf.reshape(
 output = tf.maximum(tf.sign(output_sequences), 0)
 
 loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(output_sequences, required_output))
-# loss = tf.Print(loss, [loss, tf.nn.sigmoid_cross_entropy_with_logits(output_sequences, required_output)], summarize=32)
-lr = 0
-optimizer = tf.train.GradientDescentOptimizer(lr)
-# optimizer = tf.train.AdamOptimizer()
-gradients = optimizer.compute_gradients(loss)
-# print(gradients)
-# clipped_gradients = tf.clip_by_value(gradients, -10, 10, 'clipped')
-optimize = optimizer.apply_gradients(gradients)
+# optimizer = tf.train.GradientDescentOptimizer(lr=0.001)
+optimizer = tf.train.AdamOptimizer()
+optimize = optimizer.minimize(loss)
+# gradients = optimizer.compute_gradients(loss)
+# optimize = optimizer.apply_gradients(gradients)
 accuracy = accuracy(output, required_output)
-check = tf.add_check_numerics_ops()
 
-# print('\n'.join([n.name for n in tf.get_default_graph().as_graph_def().node]))
+def show_comparison(expected, actual):
+  def join_values(values):
+    return ''.join([str(int(value)) for value in values])
+
+  for e, a in zip(expected, actual):
+    print(join_values(e) + ' ' + join_values(a))
 
 with tf.Session() as session:
   session.run(tf.initialize_all_variables())
   results = []
-  for steps in range(1000):
+  for step in range(10000):
     random_sequences = n_random_sequences(num_sequences, batch_size, sequence_length, sequence_width, sequence_padding)
-    acc, _, r, o, _ = session.run([accuracy, optimize, required_output, output_sequences, loss],
+    acc, _, r, o, os, l = session.run([accuracy, optimize, required_output, output, output_sequences, loss],
                          feed_dict={input_sequences: random_sequences})
-    print(r[0,:12,:])
-    print(o[0,:12,:])
-    print(acc)
+    show_comparison(r[0,-12:,:], o[0,-12:,:])
+    print('Step %d, Accuracy %f, Loss %f' % (step, acc, l))
     results.append(acc)
 
 print(results)

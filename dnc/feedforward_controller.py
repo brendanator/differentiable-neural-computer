@@ -48,5 +48,5 @@ class SimpleFeedforwardController(FeedforwardController):
   def layer(self, layer, inputs, inputs_size, output_size, dtype):
     with tf.variable_scope('layer-%d' % layer):
       weight = tf.get_variable('weight', shape=[inputs_size, output_size], dtype=dtype)
-      bias = tf.get_variable('bias', shape=[output_size], dtype=dtype)
-      return tf.nn.sigmoid(tf.matmul(inputs, weight) + bias)
+      bias = tf.get_variable('bias', shape=[output_size], dtype=dtype, initializer=tf.constant_initializer(0.1, dtype=dtype))
+      return self.activation(tf.matmul(inputs, weight) + bias)

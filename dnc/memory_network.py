@@ -22,8 +22,11 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
 
   @property
   def output_size(self):
-    # return tf.TensorShape([self.num_read_heads, self.memory_width])
     return self.num_read_heads * self.memory_width
+
+  def set_memory_locations(memory_locations):
+    """Once the memory network has been trained it should work with a larger memory"""
+    self.memory_locations = memory_locations
 
   def __call__(self, inputs, state):
     with tf.variable_scope('MemoryNetwork'):
@@ -34,16 +37,14 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
       # Extract state
       memory, usage, precedence_weighting, temporal_linkage, read_weightings, write_weighting = state
 
-      memory = tf.check_numerics(memory, 'memory')
-      usage = tf.check_numerics(usage, 'usage')
       precedence_weighting = tf.check_numerics(precedence_weighting, 'precedence_weighting')
       temporal_linkage = tf.check_numerics(temporal_linkage, 'temporal_linkage')
       read_weightings = tf.check_numerics(read_weightings, 'read_weightings')
       write_weighting = tf.check_numerics(write_weighting, 'write_weighting')
 
       # Initiase variables
-      read_heads = [ ReadHead(inputs, self.memory_locations, self.memory_width, i, dtype) for i in range(self.num_read_heads) ]
-      write_head = WriteHead(inputs, self.memory_locations, self.memory_width, dtype)
+      read_heads = [ ReadHead(inputs, self.memory_width, i, dtype) for i in range(self.num_read_heads) ]
+      write_head = WriteHead(inputs, self.memory_width, dtype)
 
       # Dynamic memory allocation
       with tf.variable_scope('memory_allocation'):
@@ -51,14 +52,10 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
         for index, read_head in enumerate(read_heads):
           memory_retention *= 1 - read_head.free_gate * read_weightings[:, index, :]
 
-        # memory_retention = tf.Print(memory_retention, [memory_retention], 'memory_retention')
-
         new_usage = (usage + write_weighting - usage * write_weighting) * memory_retention
 
         sorted_usage, indices = tf.nn.top_k(new_usage, k=self.memory_locations, sorted=True)
-        # sorted_usage = tf.Print(sorted_usage, [indices], 'sorted_usage', summarize=320)
 
-        # This is extremely slow as it performs loads of operations
         allocation_weighting_list = []
         for batch in range(batch_size):
           scaling = 1
@@ -67,42 +64,30 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
             location_usage = sorted_usage[batch, -i-1]
             weighting[i] = (1 - location_usage) * scaling
             scaling *= location_usage
-          allocation_weighting_list.append(tf.gather(tf.pack(weighting, 0), indices[batch, :]))
+          allocation_weighting_list.append(tf.gather(tf.pack(weighting), indices[batch, :]))
 
-        allocation_weighting = tf.pack(allocation_weighting_list, 0)
-        # print(allocation_weighting)
-        allocation_weighting = assert_corner_cube(allocation_weighting)
-        # allocation_weighting = tf.Print(allocation_weighting, [allocation_weighting], 'allocation_weighting')
-        # allocation_weighting = tf.zeros_like(allocation_weighting)
+        allocation_weighting = tf.pack(allocation_weighting_list)
 
       # Write weighting
       with tf.variable_scope('write_weighting'):
         write_content_weighting = self.content_weighting(memory, write_head.write_key, write_head.write_strength)
         new_write_weighting = write_head.write_gate * (write_head.allocation_gate * allocation_weighting + (1 - write_head.allocation_gate) * write_content_weighting)
-        new_write_weighting = assert_corner_cube(new_write_weighting)
 
       # Temporal memory linkage
       with tf.variable_scope('temporal_linkage'):
-        new_temporal_linkage = tf.zeros(shape=[batch_size, self.memory_locations, self.memory_locations], dtype=dtype)
         write_weighting_matrix = tf.tile(tf.expand_dims(new_write_weighting, 2), [1, 1, self.memory_locations])
-        precedence_weighting_matrix = tf.tile(tf.expand_dims(precedence_weighting, 2), [1, 1, self.memory_locations])
         new_temporal_linkage = ((1 - write_weighting_matrix - tf.transpose(write_weighting_matrix, [0, 2, 1])) * temporal_linkage
-                                + write_weighting_matrix * tf.transpose(precedence_weighting_matrix, [0, 2, 1]))
+                                + tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(precedence_weighting, 1)))
         non_diagonal_ones = tf.matrix_set_diag(tf.ones([batch_size, self.memory_locations, self.memory_locations]), tf.zeros([batch_size, self.memory_locations]))
         new_temporal_linkage = new_temporal_linkage * non_diagonal_ones
 
         new_precedence_weighting = (1 - tf.reduce_sum(new_write_weighting, reduction_indices=1, keep_dims=True)) * precedence_weighting + new_write_weighting
-        new_precedence_weighting = assert_corner_cube(new_precedence_weighting)
-        for i in range(self.memory_locations):
-          assert_corner_cube(new_temporal_linkage[i, :])
-          assert_corner_cube(new_temporal_linkage[:, i])
 
       # Write memory
       with tf.variable_scope('write_memory'):
         new_memory = (
             memory * (1 - tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(write_head.erase_vector, 1)))
             + tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(write_head.write_vector, 1)))
-        # new_memory = tf.Print(new_memory, [new_memory], 'memory', summarize=100)
 
       # Read memory
       with tf.variable_scope('read_memory'):
@@ -111,44 +96,34 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
         for index, read_head in enumerate(read_heads):
           read_weighting = read_weightings[:, index, :]
 
-          backward_weighting = tf.squeeze(tf.batch_matmul(tf.transpose(new_temporal_linkage, [0, 2, 1]), tf.expand_dims(read_weighting, 2)), [2])
-          backward_weighting = assert_corner_cube(backward_weighting)
+          backward_weighting = tf.squeeze(tf.batch_matmul(new_temporal_linkage, tf.expand_dims(read_weighting, 2), adj_x=True), [2])
           read_content_weighting = self.content_weighting(new_memory, read_head.read_key, read_weighting)
           forward_weighting = tf.squeeze(tf.batch_matmul(new_temporal_linkage, tf.expand_dims(read_weighting, 2)), [2])
-          forward_weighting = assert_corner_cube(forward_weighting)
 
-          # read_head.read_mode = tf.Print(read_head.read_mode, [tf.reduce_sum(backward_weighting), tf.reduce_sum(read_content_weighting), tf.reduce_sum(forward_weighting)], 'read_head.read_mode')
-          new_read_weighting = tf.batch_matmul(tf.expand_dims(read_head.read_mode, 1), tf.pack([backward_weighting, read_content_weighting, forward_weighting], 1))
+          bcf_weightings = tf.pack([backward_weighting, read_content_weighting, forward_weighting], 1)
+          new_read_weighting = tf.batch_matmul(tf.expand_dims(read_head.read_mode, 1), bcf_weightings)
 
           read_result = tf.squeeze(tf.batch_matmul(new_read_weighting, new_memory), [1])
 
           new_read_weighting_list.append(new_read_weighting)
           read_result_list.append(read_result)
 
-        new_read_weighting = assert_corner_cube(new_read_weighting)
-
       # Return results
       output = tf.concat(1, read_result_list)
-      # output = with_dependencies([tf.Assert(output != float('nan'), [output])], output)
-      # output = tf.Print(output, [new_memory, new_usage, new_precedence_weighting, new_temporal_linkage, tf.concat(1, new_read_weighting_list, name='new_read_weighting'), new_write_weighting], 'output')
       new_state = MemoryNetworkState(new_memory, new_usage, new_precedence_weighting, new_temporal_linkage, tf.concat(1, new_read_weighting_list, name='new_read_weighting'), new_write_weighting)
       return output, new_state
 
   def content_weighting(self, memory, key, strength):
     with tf.variable_scope('content_weighting'):
-      epsilon = 0.0001
-      normalised_memory = memory / (tf.sqrt(tf.reduce_sum(tf.square(memory), 1, keep_dims=True)) + epsilon)
-      normalised_key = key / (tf.sqrt(tf.reduce_sum(tf.square(key), 1, keep_dims=True)) + epsilon)
+      normalised_memory = tf.nn.l2_normalize(memory, 2)
+      normalised_key = tf.nn.l2_normalize(key, 1)
 
-      content_weightings = tf.exp(tf.squeeze(tf.batch_matmul(normalised_memory, tf.expand_dims(normalised_key, 2))) * strength)
-      total_content_weightings = tf.reduce_sum(content_weightings, reduction_indices=1, keep_dims=True)
+      similarity = tf.squeeze(tf.batch_matmul(normalised_memory, tf.expand_dims(normalised_key, 2)))
 
-      result = content_weightings / total_content_weightings
-      assert_corner_cube(result)
-      return result
+      return tf.nn.softmax(similarity * strength)
 
 class ReadHead(object):
-  def __init__(self, inputs, memory_locations, memory_width, index, dtype):
+  def __init__(self, inputs, memory_width, index, dtype):
     inputs_len = inputs.get_shape().as_list()[1]
 
     with tf.variable_scope('ReadHead%s' % index):
@@ -169,7 +144,7 @@ class ReadHead(object):
       self.read_mode = tf.nn.softmax(tf.nn.xw_plus_b(inputs, read_mode_weights, read_mode_bias), name='read_mode')
 
 class WriteHead(object):
-  def __init__(self, inputs, memory_locations, memory_width, dtype):
+  def __init__(self, inputs, memory_width, dtype):
     inputs_len = inputs.get_shape().as_list()[1]
 
     with tf.variable_scope('WriteHead'):
