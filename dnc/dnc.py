@@ -22,13 +22,12 @@ class DifferentiableNeuralComputer(tf.nn.rnn_cell.RNNCell):
 
   def __call__(self, inputs, state):
     with tf.variable_scope('dnc'):
-      batch_size = inputs.get_shape().as_list()[0]
       controller_state, memory_state, read_vectors = state
-      controller_input = tf.concat(1, [inputs, read_vectors])
 
+      controller_input = tf.concat(1, [inputs, read_vectors])
       controller_output, new_controller_state = self.controller_network(controller_input, controller_state)
       new_read_vectors, new_memory_state = self.memory_network(controller_output, memory_state)
 
-      output = tf.reshape(tf.concat(1, [controller_output, new_read_vectors]), [-1, self.output_size])
+      output = tf.concat(1, [controller_output, new_read_vectors])
       new_state = DncState(new_controller_state, new_memory_state, new_read_vectors)
       return output, new_state
