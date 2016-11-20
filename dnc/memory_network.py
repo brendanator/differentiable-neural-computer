@@ -37,11 +37,6 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
       # Extract state
       memory, usage, precedence_weighting, temporal_linkage, read_weightings, write_weighting = state
 
-      precedence_weighting = tf.check_numerics(precedence_weighting, 'precedence_weighting')
-      temporal_linkage = tf.check_numerics(temporal_linkage, 'temporal_linkage')
-      read_weightings = tf.check_numerics(read_weightings, 'read_weightings')
-      write_weighting = tf.check_numerics(write_weighting, 'write_weighting')
-
       # Initiase variables
       read_heads = ReadHeads(inputs, self.num_read_heads, self.memory_width, dtype)
       write_head = WriteHead(inputs, self.memory_width, dtype)
@@ -50,20 +45,15 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
       with tf.variable_scope('memory_allocation'):
         memory_retention = tf.reduce_prod(1 - read_heads.free_gate * read_weightings, 2)
         new_usage = (usage + write_weighting - usage * write_weighting) * memory_retention
-        sorted_usage, indices = tf.nn.top_k(new_usage, k=self.memory_locations, sorted=True)
-        # [3, 4, 1, 2] -> ([4, 3, 2, 1], [1, 0, 3, 2])
-
-        allocation_weighting_list = []
-        for batch in range(batch_size):
-          scaling = 1
-          weighting = [0] * self.memory_locations
-          for i in range(self.memory_locations):
-            location_usage = sorted_usage[batch, -i-1]
-            weighting[i] = (1 - location_usage) * scaling
-            scaling *= location_usage
-          allocation_weighting_list.append(tf.gather(tf.pack(weighting), indices[batch, :]))
-
-        allocation_weighting = tf.pack(allocation_weighting_list)
+        sorted_usage, indices = tf.nn.top_k(-new_usage, k=self.memory_locations, sorted=True)
+        sorted_usage = -sorted_usage
+        scalings = tf.cumprod(sorted_usage, 1, exclusive=True)
+        allocation_weighting = (1 - sorted_usage) * scalings
+        # Due to tf.gather_nd not implementing gradients yet a loop is needed :(
+        allocation_weighting = tf.pack(
+          [tf.gather(allocation_weighting[batch], indices[batch, :]) for batch in range(batch_size)],
+          name='allocation_weighting'
+        )
 
       # Write weighting
       with tf.variable_scope('write_weighting'):
@@ -92,7 +82,7 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
       # Read memory
       with tf.variable_scope('read_memory'):
         backward_weighting = tf.batch_matmul(new_temporal_linkage, read_weightings, adj_x=True)
-        read_content_weighting = self.content_weighting(new_memory, read_heads.read_key, read_weightings)
+        read_content_weighting = self.content_weighting(new_memory, read_heads.read_key, read_heads.read_strength)
         forward_weighting = tf.batch_matmul(new_temporal_linkage, read_weightings)
 
         bcf_weightings = tf.pack([backward_weighting, read_content_weighting, forward_weighting], 2)
