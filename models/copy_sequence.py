@@ -2,93 +2,126 @@ import tensorflow as tf
 import numpy as np
 import context
 from dnc import *
+from curriculum import learn_curriculum
 
 
-def random_sequence(batch_size, sequence_length, sequence_width, sequence_padding):
+def random_sequence(batch_size, sequence_length, sequence_width, repeats):
   sequence = np.random.randint(2, size=[batch_size, sequence_length, sequence_width])
-  return np.pad(sequence, mode='constant', pad_width=[[0,0], [sequence_padding, sequence_length + sequence_padding], [0,0]])
 
-def n_random_sequences(n, batch_size, sequence_length, sequence_width, sequence_padding):
-  random_sequences = [
-    random_sequence(batch_size, sequence_length, sequence_width, sequence_padding)
-    for _ in range(n)
-  ]
-  return np.concatenate(random_sequences, axis=1)
+  input_sequence = np.zeros([batch_size, (repeats+1) * (sequence_length+1), sequence_width + 2])
+  input_sequence[:, :sequence_length, :sequence_width] = sequence
+  input_sequence[:, sequence_length, -2] = 1
+  input_sequence[:, sequence_length+1, -1] = repeats
 
-def required_output(input_sequences, sequence_length, sequence_padding):
-  total_sequence_length = input_sequences.get_shape().as_list()[1]
-  return tf.pad(tf.slice(input_sequences, [0, 0, 0], [-1, total_sequence_length - (sequence_length + sequence_padding), -1]), [[0,0],[sequence_length+sequence_padding,0],[0,0]])
+  target_sequence = np.zeros([batch_size, (repeats+1) * (sequence_length+1), sequence_width])
+  for r in range(repeats):
+    target_sequence[:, (sequence_length+1)*(r+1):(sequence_length+1)*(r+2)-1, :] = sequence
 
-def accuracy(pred, y):
-  correct = tf.equal(pred, y)
-  return tf.reduce_mean(tf.to_float(correct))
+  return input_sequence, target_sequence
 
-# r = random_sequence(1, 5, 5, 1)
-# print(r)
-# sess = tf.InteractiveSession()
-# total_sequence_length = 12
-# print(required_output(r, 5, 1))
-# exit()
-dtype=tf.float32
-batch_size = 1
-sequence_length = 5
-sequence_padding = 1
-sequence_width = 5
-num_sequences = 10
-total_sequence_length = (sequence_length + sequence_padding) * 2 * num_sequences
 
-input_shape = [batch_size, total_sequence_length, sequence_width]
-input_sequences = tf.placeholder(shape=input_shape, dtype=dtype)
-required_output = required_output(input_sequences, sequence_length, sequence_padding)
-controller_network = SimpleFeedforwardController(20, 2, tf.nn.relu)
+def random_sequences(batch_size, num_sequences, sequence_length, sequence_width, repeats):
+  input_sequences, target_sequences = [], []
+  for _ in range(num_sequences):
+    input_sequence, target_sequence = random_sequence(batch_size, sequence_length, sequence_width, repeats)
+    input_sequences.append(input_sequence)
+    target_sequences.append(target_sequence)
 
-dnc = DifferentiableNeuralComputer(
-  controller_network,
-  memory_locations=2*sequence_length,
-  memory_width=2*sequence_width,
-  num_read_heads=1)
+  input_sequences = np.concatenate(input_sequences, axis=1)
+  target_sequences = np.concatenate(target_sequences, axis=1)
 
-# dnc = tf.nn.rnn_cell.BasicLSTMCell(20)
-# dnc = tf.nn.rnn_cell.MultiRNNCell([dnc] * 3)
-outputs, states = tf.scan(fn=lambda a, x: dnc(x, a[1]),
-                          elems=tf.transpose(input_sequences, [1, 0, 2]),
-                          initializer=(tf.zeros([batch_size, dnc.output_size]), dnc.zero_state(batch_size, dtype)))
-outputs = tf.transpose(outputs, [1, 0, 2])
-# print(states)
-# outputs, _ = tf.nn.dynamic_rnn(dnc, input_sequences, dtype=dtype)
-# print(outputs)
+  return input_sequences, target_sequences
 
-weights = tf.get_variable('weights', [dnc.output_size, sequence_width])
-bias = tf.get_variable('bias', [sequence_width])
-output_sequences = tf.reshape(
-  tf.matmul(tf.reshape(outputs, [-1, dnc.output_size]), weights) + bias,
-  input_shape)
-output = tf.maximum(tf.sign(output_sequences), 0)
 
-loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(output_sequences, required_output))
-# optimizer = tf.train.GradientDescentOptimizer(lr=0.001)
-optimizer = tf.train.AdamOptimizer()
-optimize = optimizer.minimize(loss)
-# gradients = optimizer.compute_gradients(loss)
-# optimize = optimizer.apply_gradients(gradients)
-accuracy = accuracy(output, required_output)
+def random_sequences_lesson(batch_size, num_sequences, sequence_length, sequence_width, repeats):
+  return lambda: random_sequences(batch_size, num_sequences, sequence_length, sequence_width, repeats)
 
-def show_comparison(expected, actual):
-  def join_values(values):
-    return ''.join([str(int(value)) for value in values])
 
-  for e, a in zip(expected, actual):
-    print(join_values(e) + ' ' + join_values(a))
+if __name__ == '__main__':
 
-with tf.Session() as session:
-  session.run(tf.initialize_all_variables())
-  results = []
-  for step in range(10000):
-    random_sequences = n_random_sequences(num_sequences, batch_size, sequence_length, sequence_width, sequence_padding)
-    acc, _, r, o, os, l = session.run([accuracy, optimize, required_output, output, output_sequences, loss],
-                         feed_dict={input_sequences: random_sequences})
-    show_comparison(r[0,-12:,:], o[0,-12:,:])
-    print('Step %d, Accuracy %f, Loss %f' % (step, acc, l))
-    results.append(acc)
+  # Options
+  batch_size = 1
+  sequence_width = 6
+  dtype=tf.float32
 
-print(results)
+  # Input/output placeholders
+  input_sequences = tf.placeholder(shape=[batch_size, None, sequence_width+2], dtype=dtype)
+  target_sequences = tf.placeholder(shape=[batch_size, None, sequence_width], dtype=dtype)
+
+  # Differentiable neural computer
+  controller_network = SimpleFeedforwardController(100, 2, tf.nn.relu)
+  dnc = DifferentiableNeuralComputer(
+    controller_network,
+    memory_locations=10,
+    memory_width=10,
+    num_read_heads=1)
+  dnc_output, _ = tf.nn.dynamic_rnn(
+    dnc,
+    input_sequences,
+    dtype=dtype,
+    initial_state=dnc.zero_state(batch_size, dtype))
+
+  # Predict output
+  weights = tf.get_variable('weights', [dnc.output_size, sequence_width])
+  bias = tf.get_variable('bias', [sequence_width])
+  output_sequences = tf.reshape(
+    tf.matmul(tf.reshape(dnc_output, [-1, dnc.output_size]), weights) + bias,
+    [batch_size, -1, sequence_width])
+  predicted_sequences = tf.maximum(tf.sign(output_sequences), 0)
+
+  # Loss and training operations
+  loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(output_sequences, target_sequences))
+  optimizer = tf.train.RMSPropOptimizer(1e-4, momentum=0.9)
+  gradients = optimizer.compute_gradients(loss)
+  gradients = [(tf.clip_by_value(gradient, -10, 10), variable) for gradient, variable in gradients]
+  optimize = optimizer.apply_gradients(gradients)
+  accuracy = tf.reduce_mean(tf.to_float(tf.equal(predicted_sequences, target_sequences)))
+
+
+  with tf.Session() as session:
+
+    def train(input_, target):
+      _, acc = session.run([optimize, accuracy],
+                          feed_dict={input_sequences: input_, target_sequences: target})
+      # Success on 95% accuracy
+      return acc > 0.95
+
+    def print_sequence(sequence):
+      # Only print first example in batch
+      for values in np.transpose(sequence[0]):
+        print(''.join([str(int(value)) for value in values]))
+
+    def evaluate(input_, target, step, lesson):
+      acc, loss_, predicted = session.run([accuracy, loss, predicted_sequences],
+                                          feed_dict={input_sequences: input_, target_sequences: target})
+
+      print('Step %d, Lesson %d, Accuracy %f, Loss %f' % (step, lesson, acc, loss_))
+      print('Expected:')
+      print_sequence(target)
+      print('Predicted:')
+      print_sequence(predicted)
+      print('')
+
+      if step % 1000 == 0:
+        tf.train.Saver(tf.trainable_variables()).save(session, 'checkpoints/copy.model', global_step=step)
+
+
+    session.run(tf.initialize_all_variables())
+
+    lessons = [
+      random_sequences_lesson(
+        batch_size,
+        num_sequences=1,
+        sequence_length=length,
+        sequence_width=sequence_width,
+        repeats=1)
+      for length in range(2,10)]
+
+    learn_curriculum(
+      lessons,
+      train,
+      evaluate,
+      random_lesson_ratio=0.1,
+      level_up_streak=10,
+      max_steps=50000,
+      eval_period=100)
