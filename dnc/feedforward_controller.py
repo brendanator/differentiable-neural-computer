@@ -21,6 +21,9 @@ class FeedforwardController():
   def state_size(self):
     return 0
 
+  def zero_state(self, batch_size, dtype):
+    return tf.zeros([batch_size, 0], dtype)
+
   def __call__(self, inputs, state):
     return self.feedforward(inputs), state
 

@@ -24,6 +24,15 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
   def output_size(self):
     return self.num_read_heads * self.memory_width
 
+  def zero_state(self, batch_size, dtype):
+    return MemoryNetworkState(
+      memory = tf.fill([batch_size, self.memory_locations, self.memory_width], 1e-6),
+      usage = tf.zeros([batch_size, self.memory_locations]),
+      precedence_weighting = tf.zeros([batch_size, self.memory_locations]),
+      temporal_linkage = tf.zeros([batch_size, self.memory_locations, self.memory_locations]),
+      read_weightings = tf.fill([batch_size, self.memory_locations, self.num_read_heads], 1e-6),
+      write_weighting = tf.fill([batch_size, self.memory_locations], 1e-6))
+
   def set_memory_locations(memory_locations):
     """Once the memory network has been trained it should work with a larger memory"""
     self.memory_locations = memory_locations

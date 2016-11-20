@@ -20,6 +20,12 @@ class DifferentiableNeuralComputer(tf.nn.rnn_cell.RNNCell):
   def output_size(self):
     return self.controller_network.output_size + self.memory_network.output_size
 
+  def zero_state(self, batch_size, dtype):
+    return DncState(
+      self.controller_network.zero_state(batch_size, dtype),
+      self.memory_network.zero_state(batch_size, dtype),
+      tf.zeros([batch_size, self.memory_network.output_size]))
+
   def __call__(self, inputs, state):
     with tf.variable_scope('dnc'):
       controller_state, memory_state, read_vectors = state
