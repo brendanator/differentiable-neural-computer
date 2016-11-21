@@ -52,8 +52,8 @@ if __name__ == '__main__':
   controller_network = SimpleFeedforwardController(100, 2, tf.nn.relu)
   dnc = DifferentiableNeuralComputer(
     controller_network,
-    memory_locations=10,
-    memory_width=10,
+    memory_locations=50,
+    memory_width=sequence_width,
     num_read_heads=1)
   dnc_output, _ = tf.nn.dynamic_rnn(
     dnc,
