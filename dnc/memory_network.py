@@ -74,19 +74,17 @@ class MemoryNetwork(tf.nn.rnn_cell.RNNCell):
 
       # Temporal memory linkage
       with tf.variable_scope('temporal_linkage'):
-        write_weighting_matrix = tf.tile(tf.expand_dims(new_write_weighting, 2), [1, 1, self.memory_locations])
-        new_temporal_linkage = ((1 - write_weighting_matrix - tf.transpose(write_weighting_matrix, [0, 2, 1])) * temporal_linkage
-                                + tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(precedence_weighting, 1)))
-        non_diagonal_ones = tf.matrix_set_diag(tf.ones([batch_size, self.memory_locations, self.memory_locations]), tf.zeros([batch_size, self.memory_locations]))
-        new_temporal_linkage = new_temporal_linkage * non_diagonal_ones
+        new_temporal_linkage = ((1 - tf.expand_dims(new_write_weighting, 2) - tf.expand_dims(new_write_weighting, 1)) * temporal_linkage
+                                + tf.expand_dims(new_write_weighting, 2) * tf.expand_dims(precedence_weighting, 1))
+        new_temporal_linkage = tf.matrix_set_diag(new_temporal_linkage, tf.zeros([batch_size, self.memory_locations]))
 
         new_precedence_weighting = (1 - tf.reduce_sum(new_write_weighting, reduction_indices=1, keep_dims=True)) * precedence_weighting + new_write_weighting
 
       # Write memory
       with tf.variable_scope('write_memory'):
-        new_memory = (
-            memory * (1 - tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(write_head.erase_vector, 1)))
-            + tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(write_head.write_vector, 1)))
+        erased_memory = memory * (1 - tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(write_head.erase_vector, 1)))
+        written_memory = tf.batch_matmul(tf.expand_dims(new_write_weighting, 2), tf.expand_dims(write_head.write_vector, 1))
+        new_memory = erased_memory + written_memory
 
       # Read memory
       with tf.variable_scope('read_memory'):
@@ -124,7 +122,7 @@ class ReadHeads(object):
 
       read_strength_weights = tf.get_variable('read_strength_weights', shape=[inputs_len, num_heads], dtype=dtype)
       read_strength_bias = tf.get_variable('read_strength_bias', shape=[num_heads], dtype=dtype)
-      self.read_strength = one_plus(tf.nn.xw_plus_b(inputs, read_strength_weights, read_strength_bias), name='read_strength')
+      self.read_strength = tf.expand_dims(one_plus(tf.nn.xw_plus_b(inputs, read_strength_weights, read_strength_bias)), 2, name='read_strength')
 
       free_gate_weights = tf.get_variable('free_gate_weights', shape=[inputs_len, num_heads], dtype=dtype)
       free_gate_bias = tf.get_variable('free_gate_bias', shape=[num_heads], dtype=dtype)
