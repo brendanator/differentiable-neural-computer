@@ -43,7 +43,8 @@ def random_sequences_lesson(batch_size, num_sequences, sequence_length, sequence
 if __name__ == '__main__':
 
   # Check checkpoint directory
-  os.mkdir('checkpoints')
+  if not os.path.isdir('checkpoints'):
+    os.mkdir('checkpoints')
 
   # Options
   batch_size = 32
@@ -90,7 +91,7 @@ if __name__ == '__main__':
       _, acc = session.run([optimize, accuracy],
                           feed_dict={input_sequences: input_, target_sequences: target})
       # Success on 95% accuracy
-      return acc > 0.98
+      return acc > 0.95
 
     def print_sequence(sequence):
       # Only print first example in batch
