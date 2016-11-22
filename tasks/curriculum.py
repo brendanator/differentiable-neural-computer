@@ -37,7 +37,7 @@ def learn_curriculum(lessons, train, evaluate, random_lesson_ratio, level_up_str
   streak = 0
 
   while step < max_steps and current_level < len(lessons):
-    if current_level == 0 or random.random() > random_lesson_ratio:
+    if random.random() > random_lesson_ratio:
       inputs, targets = lesson(current_level)
       correct = train(inputs, targets)
       if correct:

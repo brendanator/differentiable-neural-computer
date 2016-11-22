@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import random
 import context
 from dnc import *
 from curriculum import learn_curriculum
@@ -8,21 +9,22 @@ from curriculum import learn_curriculum
 def random_sequence(batch_size, sequence_length, sequence_width, repeats):
   sequence = np.random.randint(2, size=[batch_size, sequence_length, sequence_width])
 
-  input_sequence = np.zeros([batch_size, (repeats+1) * (sequence_length+1), sequence_width + 2])
+  input_sequence = np.zeros([batch_size, (repeats+1) * sequence_length, sequence_width + 2])
   input_sequence[:, :sequence_length, :sequence_width] = sequence
-  input_sequence[:, sequence_length, -2] = 1
-  input_sequence[:, sequence_length+1, -1] = repeats
+  input_sequence[:, sequence_length-1, -2] = 1
+  input_sequence[:, sequence_length, -1] = repeats
 
-  target_sequence = np.zeros([batch_size, (repeats+1) * (sequence_length+1), sequence_width])
+  target_sequence = np.zeros([batch_size, (repeats+1) * sequence_length, sequence_width])
   for r in range(repeats):
-    target_sequence[:, (sequence_length+1)*(r+1):(sequence_length+1)*(r+2)-1, :] = sequence
+    target_sequence[:, sequence_length*(r+1):sequence_length*(r+2), :] = sequence
 
   return input_sequence, target_sequence
 
 
-def random_sequences(batch_size, num_sequences, sequence_length, sequence_width, repeats):
+def random_sequences(batch_size, num_sequences, sequence_length, sequence_width, max_repeats):
   input_sequences, target_sequences = [], []
   for _ in range(num_sequences):
+    repeats = random.randint(1, max_repeats)
     input_sequence, target_sequence = random_sequence(batch_size, sequence_length, sequence_width, repeats)
     input_sequences.append(input_sequence)
     target_sequences.append(target_sequence)
@@ -33,14 +35,14 @@ def random_sequences(batch_size, num_sequences, sequence_length, sequence_width,
   return input_sequences, target_sequences
 
 
-def random_sequences_lesson(batch_size, num_sequences, sequence_length, sequence_width, repeats):
-  return lambda: random_sequences(batch_size, num_sequences, sequence_length, sequence_width, repeats)
+def random_sequences_lesson(batch_size, num_sequences, sequence_length, sequence_width, max_repeats):
+  return lambda: random_sequences(batch_size, num_sequences, sequence_length, sequence_width, max_repeats)
 
 
 if __name__ == '__main__':
 
   # Options
-  batch_size = 1
+  batch_size = 32
   sequence_width = 6
   dtype=tf.float32
 
@@ -49,11 +51,11 @@ if __name__ == '__main__':
   target_sequences = tf.placeholder(shape=[batch_size, None, sequence_width], dtype=dtype)
 
   # Differentiable neural computer
-  controller_network = SimpleFeedforwardController(100, 2, tf.nn.relu)
+  controller_network = SimpleFeedforwardController(20, 2, tf.nn.relu)
   dnc = DifferentiableNeuralComputer(
     controller_network,
     memory_locations=50,
-    memory_width=sequence_width,
+    memory_width=2*sequence_width,
     num_read_heads=1)
   dnc_output, _ = tf.nn.dynamic_rnn(
     dnc,
@@ -71,7 +73,7 @@ if __name__ == '__main__':
 
   # Loss and training operations
   loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(output_sequences, target_sequences))
-  optimizer = tf.train.RMSPropOptimizer(1e-4, momentum=0.9)
+  optimizer = tf.train.AdamOptimizer()
   gradients = optimizer.compute_gradients(loss)
   gradients = [(tf.clip_by_value(gradient, -10, 10), variable) for gradient, variable in gradients]
   optimize = optimizer.apply_gradients(gradients)
@@ -84,7 +86,7 @@ if __name__ == '__main__':
       _, acc = session.run([optimize, accuracy],
                           feed_dict={input_sequences: input_, target_sequences: target})
       # Success on 95% accuracy
-      return acc > 0.95
+      return acc > 0.98
 
     def print_sequence(sequence):
       # Only print first example in batch
@@ -96,6 +98,8 @@ if __name__ == '__main__':
                                           feed_dict={input_sequences: input_, target_sequences: target})
 
       print('Step %d, Lesson %d, Accuracy %f, Loss %f' % (step, lesson, acc, loss_))
+      print('Input:')
+      print_sequence(input_)
       print('Expected:')
       print_sequence(target)
       print('Predicted:')
@@ -111,17 +115,19 @@ if __name__ == '__main__':
     lessons = [
       random_sequences_lesson(
         batch_size,
-        num_sequences=1,
+        num_sequences=3,
         sequence_length=length,
         sequence_width=sequence_width,
-        repeats=1)
+        max_repeats=1)
       for length in range(2,10)]
 
     learn_curriculum(
       lessons,
       train,
       evaluate,
-      random_lesson_ratio=0.1,
+      random_lesson_ratio=0,
       level_up_streak=10,
       max_steps=50000,
       eval_period=100)
+
+    tf.train.Saver(tf.trainable_variables()).save(session, 'checkpoints/copy.model')
