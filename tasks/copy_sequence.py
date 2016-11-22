@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import os
 import random
 import context
 from dnc import *
@@ -40,6 +41,9 @@ def random_sequences_lesson(batch_size, num_sequences, sequence_length, sequence
 
 
 if __name__ == '__main__':
+
+  # Check checkpoint directory
+  os.mkdir('checkpoints')
 
   # Options
   batch_size = 32
